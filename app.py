@@ -5,17 +5,14 @@ import os
 
 app = Flask(__name__)
 
-# === ENVIRONMENT VARIABLES ===
-OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY")
-DEEPGRAM_KEY = os.environ.get("DEEPGRAM_KEY")
-FROM_NUMBER = os.environ.get("FROM_NUMBER")  # Your Sinch number
-
-if not OPENAI_API_KEY or not DEEPGRAM_KEY or not FROM_NUMBER:
-    raise ValueError("Please set OPENAI_API_KEY, DEEPGRAM_KEY, and FROM_NUMBER in environment variables.")
+# === API KEYS ===
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "PASTE_OPENAI_KEY_HERE")
+DEEPGRAM_KEY = os.getenv("DEEPGRAM_KEY", "PASTE_DEEPGRAM_KEY_HERE")
+FROM_NUMBER = os.getenv("FROM_NUMBER", "+1416XXXXXXX")
 
 openai.api_key = OPENAI_API_KEY
 
-# MIKE FERRY PROMPT (full version)
+# === MIKE FERRY PROMPT ===
 MIKE_FERRY_PROMPT = """
 You are Abhinav, expert realtor with HomeLife Miracle Realty.
 Goal: Book 15-min consult.
@@ -30,13 +27,30 @@ Goal: Book 15-min consult.
 6. Close: 'Let’s do a quick 15-min call. Tuesday 10 AM or 2 PM? Call 555-1234.'
 """
 
-# --- Root route ---
+# === HOMEPAGE ROUTE ===
 @app.route("/")
-def index():
-    return "Real Estate AI is running!"
+def home():
+    return "✅ Real Estate AI Agent is live and ready!"
 
-# --- /voice endpoint ---
-@app.route("/voice", methods=["POST"])
+# === TEST ROUTE ===
+@app.route("/test")
+def test():
+    """Simple OpenAI test without Sinch or Deepgram"""
+    try:
+        response = openai.ChatCompletion.create(
+            model="gpt-4o-mini",
+            messages=[
+                {"role": "system", "content": "You are a friendly assistant."},
+                {"role": "user", "content": "Say hello as Abhinav, the realtor."}
+            ],
+            temperature=0.7
+        )
+        return jsonify({"message": response.choices[0].message.content})
+    except Exception as e:
+        return jsonify({"error": str(e)})
+
+# === SINCH VOICE ROUTE ===
+@app.route("/voice", methods=['POST'])
 def voice():
     data = request.json
     call_id = data.get("callId")
@@ -52,8 +66,8 @@ def voice():
         "next": "/webhook"
     })
 
-# --- /webhook endpoint ---
-@app.route("/webhook", methods=["POST"])
+# === WEBHOOK ROUTE ===
+@app.route("/webhook", methods=['POST'])
 def webhook():
     data = request.json
     user_text = data.get("input", {}).get("speech", "")
@@ -65,7 +79,6 @@ def webhook():
         {"role": "system", "content": MIKE_FERRY_PROMPT},
         {"role": "user", "content": user_text}
     ]
-
     response = openai.ChatCompletion.create(
         model="gpt-4o-mini",
         messages=messages,
@@ -83,7 +96,7 @@ def webhook():
         "next": "/webhook"
     })
 
-# --- Deepgram TTS ---
+# === TEXT TO SPEECH ===
 def text_to_speech(text):
     url = "https://api.deepgram.com/v1/speak"
     headers = {
@@ -91,9 +104,9 @@ def text_to_speech(text):
         "Content-Type": "application/json"
     }
     payload = {"text": text}
-    response = requests.post(url, json=payload, headers=headers, params={"model": "nova-2"})
+    response = requests.post(url, json=payload, headers=headers, params={"model": "aura-asteria-en"})
     return response.json().get("url", "")
 
-# --- Entry point for gunicorn ---
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 8080)))
+    app.run(host="0.0.0.0", port=8080)
+
