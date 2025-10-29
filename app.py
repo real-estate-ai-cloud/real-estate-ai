@@ -5,12 +5,17 @@ import os
 
 app = Flask(__name__)
 
-# === KEYS FROM ENV VARIABLES (set these in Render Dashboard) ===
-openai.api_key = os.getenv("OPENAI_API_KEY")
-DEEPGRAM_KEY = os.getenv("DEEPGRAM_KEY")
-FROM_NUMBER = os.getenv("FROM_NUMBER", "+1416XXXXXXX")  # Optional fallback
+# === ENVIRONMENT VARIABLES ===
+OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY")
+DEEPGRAM_KEY = os.environ.get("DEEPGRAM_KEY")
+FROM_NUMBER = os.environ.get("FROM_NUMBER")  # Your Sinch number
 
-# === MIKE FERRY PROMPT ===
+if not OPENAI_API_KEY or not DEEPGRAM_KEY or not FROM_NUMBER:
+    raise ValueError("Please set OPENAI_API_KEY, DEEPGRAM_KEY, and FROM_NUMBER in environment variables.")
+
+openai.api_key = OPENAI_API_KEY
+
+# MIKE FERRY PROMPT (full version)
 MIKE_FERRY_PROMPT = """
 You are Abhinav, expert realtor with HomeLife Miracle Realty.
 Goal: Book 15-min consult.
@@ -25,11 +30,16 @@ Goal: Book 15-min consult.
 6. Close: 'Let’s do a quick 15-min call. Tuesday 10 AM or 2 PM? Call 555-1234.'
 """
 
+# --- Root route ---
+@app.route("/")
+def index():
+    return "Real Estate AI is running!"
+
+# --- /voice endpoint ---
 @app.route("/voice", methods=["POST"])
 def voice():
-    # Sinch sends JSON: {"callId": "...", "from": "...", "to": "..."}
-    data = request.json or {}
-    call_id = data.get("callId", "")
+    data = request.json
+    call_id = data.get("callId")
 
     greeting = "Hi, this is Abhinav with HomeLife Miracle Realty. Got a quick moment to chat?"
     audio_url = text_to_speech(greeting)
@@ -42,26 +52,27 @@ def voice():
         "next": "/webhook"
     })
 
+# --- /webhook endpoint ---
 @app.route("/webhook", methods=["POST"])
 def webhook():
-    data = request.json or {}
+    data = request.json
     user_text = data.get("input", {}).get("speech", "")
 
     if not user_text:
         return jsonify({"actions": [{"action": "hangup"}]})
 
-    # AI ChatCompletion (using OpenAI 0.28.0)
     messages = [
         {"role": "system", "content": MIKE_FERRY_PROMPT},
         {"role": "user", "content": user_text}
     ]
+
     response = openai.ChatCompletion.create(
         model="gpt-4o-mini",
         messages=messages,
         temperature=0.7
     )
+    ai_reply = response.choices[0].message.content
 
-    ai_reply = response["choices"][0]["message"]["content"]
     audio_url = text_to_speech(ai_reply)
 
     return jsonify({
@@ -72,8 +83,8 @@ def webhook():
         "next": "/webhook"
     })
 
+# --- Deepgram TTS ---
 def text_to_speech(text):
-    """Send text to Deepgram TTS and return audio URL."""
     url = "https://api.deepgram.com/v1/speak"
     headers = {
         "Authorization": f"Token {DEEPGRAM_KEY}",
@@ -81,11 +92,8 @@ def text_to_speech(text):
     }
     payload = {"text": text}
     response = requests.post(url, json=payload, headers=headers, params={"model": "nova-2"})
+    return response.json().get("url", "")
 
-    if response.ok and "url" in response.json():
-        return response.json()["url"]
-    return ""
-
+# --- Entry point for gunicorn ---
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=8080)
-
+    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 8080)))
