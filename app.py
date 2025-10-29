@@ -1,16 +1,16 @@
 from flask import Flask, request, jsonify
-from openai import OpenAI
+import openai
 import requests
 import os
 
 app = Flask(__name__)
 
-OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY")
-DEEPGRAM_KEY = os.environ.get("DEEPGRAM_KEY")
-FROM_NUMBER = os.environ.get("SINCH_NUMBER", "+1416XXXXXXX")
+# === KEYS FROM ENV VARIABLES (set these in Render Dashboard) ===
+openai.api_key = os.getenv("OPENAI_API_KEY")
+DEEPGRAM_KEY = os.getenv("DEEPGRAM_KEY")
+FROM_NUMBER = os.getenv("FROM_NUMBER", "+1416XXXXXXX")  # Optional fallback
 
-client = OpenAI(api_key=OPENAI_API_KEY)
-
+# === MIKE FERRY PROMPT ===
 MIKE_FERRY_PROMPT = """
 You are Abhinav, expert realtor with HomeLife Miracle Realty.
 Goal: Book 15-min consult.
@@ -27,71 +27,65 @@ Goal: Book 15-min consult.
 
 @app.route("/voice", methods=["POST"])
 def voice():
-    data = request.get_json(silent=True) or {}
-    call_id = data.get("callId")
+    # Sinch sends JSON: {"callId": "...", "from": "...", "to": "..."}
+    data = request.json or {}
+    call_id = data.get("callId", "")
+
     greeting = "Hi, this is Abhinav with HomeLife Miracle Realty. Got a quick moment to chat?"
     audio_url = text_to_speech(greeting)
+
     return jsonify({
         "actions": [
             {"action": "play", "url": audio_url},
             {"action": "input", "dtmf": True, "speech": True, "timeout": 5}
         ],
-        "next": "https://your-app.onrender.com/webhook"
+        "next": "/webhook"
     })
 
 @app.route("/webhook", methods=["POST"])
 def webhook():
-    data = request.get_json(silent=True) or {}
+    data = request.json or {}
     user_text = data.get("input", {}).get("speech", "")
 
     if not user_text:
         return jsonify({"actions": [{"action": "hangup"}]})
 
+    # AI ChatCompletion (using OpenAI 0.28.0)
     messages = [
         {"role": "system", "content": MIKE_FERRY_PROMPT},
-        {"role": "user", "content": user_text},
+        {"role": "user", "content": user_text}
     ]
+    response = openai.ChatCompletion.create(
+        model="gpt-4o-mini",
+        messages=messages,
+        temperature=0.7
+    )
 
-    try:
-        completion = client.chat.completions.create(
-            model="gpt-4o-mini",
-            messages=messages,
-            temperature=0.7,
-        )
-        ai_reply = completion.choices[0].message.content
-    except Exception as e:
-        print("OpenAI error:", e)
-        ai_reply = "Sorry, I had trouble responding. Could you repeat that?"
-
+    ai_reply = response["choices"][0]["message"]["content"]
     audio_url = text_to_speech(ai_reply)
+
     return jsonify({
         "actions": [
             {"action": "play", "url": audio_url},
             {"action": "input", "dtmf": True, "speech": True, "timeout": 5}
         ],
-        "next": "https://your-app.onrender.com/webhook"
+        "next": "/webhook"
     })
 
 def text_to_speech(text):
-    url = "https://api.deepgram.com/v1/speak?model=aura-asteria-en"
+    """Send text to Deepgram TTS and return audio URL."""
+    url = "https://api.deepgram.com/v1/speak"
     headers = {
         "Authorization": f"Token {DEEPGRAM_KEY}",
         "Content-Type": "application/json"
     }
     payload = {"text": text}
+    response = requests.post(url, json=payload, headers=headers, params={"model": "nova-2"})
 
-    try:
-        response = requests.post(url, json=payload, headers=headers)
-        if response.status_code != 200:
-            print("Deepgram TTS error:", response.text)
-            return "https://static.deepgram.com/examples/hello.mp3"
-        filename = "/tmp/output.wav"
-        with open(filename, "wb") as f:
-            f.write(response.content)
-        return "https://static.deepgram.com/examples/hello.mp3"
-    except Exception as e:
-        print("TTS error:", e)
-        return "https://static.deepgram.com/examples/hello.mp3"
+    if response.ok and "url" in response.json():
+        return response.json()["url"]
+    return ""
 
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 8080)))
+    app.run(host="0.0.0.0", port=8080)
+
